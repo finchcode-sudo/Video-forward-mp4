@@ -35,7 +35,14 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
-                android:text="裁剪片段" />
+                android:text="裁剪片段(拖拽选区,可批量)" />
+
+            <Button
+                android:id="@+id/cropButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="裁切画面(自定义分辨率)" />
 
             <Button
                 android:id="@+id/compressButton"
@@ -66,11 +73,46 @@
                 android:text="旋转/镜像视频" />
 
             <Button
+                android:id="@+id/muteButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="静音(可批量)" />
+
+            <Button
                 android:id="@+id/audioTrackButton"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
-                android:text="静音/替换音轨" />
+                android:text="替换音轨" />
+
+            <Button
+                android:id="@+id/watermarkButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="添加文字水印(可批量)" />
+
+            <Button
+                android:id="@+id/subtitleButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="烧录字幕(.srt)" />
+
+            <Button
+                android:id="@+id/speedButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="视频变速(可批量)" />
+
+            <Button
+                android:id="@+id/thumbnailButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="缩略图预览" />
 
             <Button
                 android:id="@+id/infoButton"
@@ -85,6 +127,29 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
                 android:text="处理历史记录" />
+
+            <Button
+                android:id="@+id/clearCacheButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="清理缓存" />
+
+            <Button
+                android:id="@+id/pauseButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:visibility="gone"
+                android:text="暂停当前任务" />
+
+            <Button
+                android:id="@+id/resumeButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:visibility="gone"
+                android:text="继续任务" />
 
             <Button
                 android:id="@+id/cancelButton"
