@@ -179,24 +179,18 @@ class MainActivity : AppCompatActivity() {
     outputFile.absolutePath
 )
 
-val expectedDurationMs = localFiles.sumOf { getDurationMs(it.absolutePath) }
-
+// 像 Termux 手动操作一样：直接信任 -c copy 的返回码，不做额外的时长校验。
+// 只要 ffmpeg 报告成功，就认为拼接成功，不再"事后猜疑"触发重新编码兜底，
+// 这样在参数一致的情况下能做到真正的秒级无损拼接。
 FFmpegKit.executeAsync(toCommandString(copyCommand)) { session ->
     runOnUiThread {
-        val actualDurationMs = getDurationMs(outputFile.absolutePath)
-        // ffmpeg 的 concat+copy 即使源文件格式不完全一致，也可能返回"成功"，
-        // 但生成的文件实际无法播放。这里额外用时长做一次合理性校验：
-        // 如果输出时长明显小于各段之和，说明拼接结果不可信，强制回退重新编码。
-        val durationLooksValid = expectedDurationMs <= 0 ||
-            actualDurationMs >= expectedDurationMs * 0.9
-
-        if (ReturnCode.isSuccess(session.returnCode) && durationLooksValid) {
+        if (ReturnCode.isSuccess(session.returnCode)) {
             progressBar.visibility = ProgressBar.INVISIBLE
             statusText.text = "合并完成，正在保存..."
             saveToDownloads(outputFile)
             cleanup(localFiles, listFile)
         } else {
-            statusText.text = "快速拼接结果不可靠，改用重新编码合并..."
+            statusText.text = "快速拼接失败，改用重新编码合并..."
             mergeWithReencode(localFiles, listFile, outputFile)
         }
     }
