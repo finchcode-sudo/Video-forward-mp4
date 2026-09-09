@@ -832,7 +832,7 @@ class MainActivity : AppCompatActivity() {
             .setPositiveButton("生成") { _, _ ->
                 val vals = slider.values
                 val start = vals[0].toString()
-                val dur = (vals[1] - vals[0]).coerceAtLeast(0.2).toString()
+                val dur = (vals[1] - vals[0]).coerceAtLeast(0.2f).toString()
                 gifBatch(uris, firstFile, start, dur)
             }
             .setNegativeButton("取消") { _, _ -> firstFile.delete() }
