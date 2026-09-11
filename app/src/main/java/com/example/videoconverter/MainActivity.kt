@@ -1475,7 +1475,7 @@ class MainActivity : AppCompatActivity() {
             addHistory("视频变速", outputFile.name, "成功(${speed}x)")
             inputFile.delete()
             speedBatch(uris, speed, index + 1)
-        }, onFailure = {
+        }, onFailure = { msg1 ->
             // 大概率是没有音轨(或奇数宽高)导致的filter_complex失败，改为仅处理视频画面(硬件编码器)
             statusText.text = "[${index + 1}/${uris.size}] 含音轨变速失败，改为仅变速画面(静音)..."
             val command2 = arrayOf(
@@ -1491,7 +1491,7 @@ class MainActivity : AppCompatActivity() {
                 addHistory("视频变速", outputFile.name, "成功(${speed}x,静音)")
                 inputFile.delete()
                 speedBatch(uris, speed, index + 1)
-            }, onFailure = {
+            }, onFailure = { msg2 ->
                 // 硬件编码器仍然失败(分辨率/设备兼容性问题)，换成软件编码器兜底，兼容性最好但更慢
                 statusText.text = "[${index + 1}/${uris.size}] 硬件编码失败，改用软件编码(较慢)..."
                 val command3 = arrayOf(
@@ -1506,9 +1506,11 @@ class MainActivity : AppCompatActivity() {
                     addHistory("视频变速", outputFile.name, "成功(${speed}x,软件编码,静音)")
                     inputFile.delete()
                     speedBatch(uris, speed, index + 1)
-                }, onFailure = { msg ->
-                    statusText.text = "[${index + 1}/${uris.size}] 变速失败: ${FfmpegError.friendly(msg)}"
-                    addHistory("视频变速", uris[index].toString(), "失败")
+                }, onFailure = { msg3 ->
+                    // 把三次尝试的真实FFmpeg报错都存进历史记录，下次失败直接看历史就知道原因，不用再猜
+                    statusText.text = "[${index + 1}/${uris.size}] 变速失败: ${FfmpegError.friendly(msg3)}"
+                    val diag = "尝试1(硬件+音轨):${msg1.takeLast(120)} | 尝试3(软件编码):${msg3.takeLast(200)}"
+                    addHistory("视频变速", uris[index].toString(), "失败 | $diag")
                     inputFile.delete()
                     speedBatch(uris, speed, index + 1)
                 })
