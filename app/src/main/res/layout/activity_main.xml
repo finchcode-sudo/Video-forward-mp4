@@ -66,6 +66,27 @@
                 android:text="视频转GIF" />
 
             <Button
+                android:id="@+id/gifToVideoButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="GIF 转视频" />
+
+            <Button
+                android:id="@+id/gifSplitButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="GIF 拆分(逐帧导出为zip)" />
+
+            <Button
+                android:id="@+id/mvimgToGifButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="动态照片转 GIF" />
+
+            <Button
                 android:id="@+id/rotateButton"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
