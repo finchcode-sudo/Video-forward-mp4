@@ -29,8 +29,9 @@ android {
         abi {
             enable true
             reset()
-            // 大多数手机是arm64-v8a，单独拆分后每个APK体积会小很多
-            include "arm64-v8a", "armeabi-v7a"
+            // 现在绝大多数手机都是64位(arm64-v8a)，去掉32位(armeabi-v7a)，
+            // 避免CI产物里出现两个APK导致安装时弹"选择架构"的选择框。
+            include "arm64-v8a"
             universalApk false
         }
     }
