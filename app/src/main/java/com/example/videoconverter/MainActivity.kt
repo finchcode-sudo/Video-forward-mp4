@@ -804,7 +804,7 @@ class MainActivity : AppCompatActivity() {
 
         runFfmpeg(command, noticeTitle = "提取音频", onSuccess = {
             statusText.text = "[${index + 1}/${uris.size}] 提取成功，正在保存..."
-            saveAudioToMusic(outputFile)
+            saveToDownloads(outputFile, "audio/mp4")
             addHistory("提取音频", outputFile.name, "成功(直接拷贝音轨)")
             inputFile.delete()
             extractAudioBatch(uris, index + 1)
@@ -812,7 +812,7 @@ class MainActivity : AppCompatActivity() {
             val command2 = arrayOf("-y", "-i", inputFile.absolutePath, "-vn", "-c:a", "aac", "-b:a", "192k", outputFile.absolutePath)
             runFfmpeg(command2, noticeTitle = "提取音频", onSuccess = {
                 statusText.text = "[${index + 1}/${uris.size}] 提取成功(已转码)，正在保存..."
-                saveAudioToMusic(outputFile)
+                saveToDownloads(outputFile, "audio/mp4")
                 addHistory("提取音频", outputFile.name, "成功(转码)")
                 inputFile.delete()
                 extractAudioBatch(uris, index + 1)
@@ -1455,7 +1455,10 @@ class MainActivity : AppCompatActivity() {
         progressBar.visibility = ProgressBar.VISIBLE
 
         val atempoChain = buildAtempoFilter(speed)
-        val filterComplex = "[0:v]setpts=PTS/${speed}[v];[0:a]$atempoChain[a]"
+        // pad 到偶数宽高：h264_mediacodec 这类硬件编码器对奇数宽高经常直接失败，
+        // 参考 GIF转视频 那里踩过的同样的坑。
+        val padFilter = "pad=ceil(iw/2)*2:ceil(ih/2)*2"
+        val filterComplex = "[0:v]setpts=PTS/${speed},$padFilter[v];[0:a]$atempoChain[a]"
         val command = arrayOf(
             "-y", "-i", inputFile.absolutePath,
             "-filter_complex", filterComplex,
@@ -1473,11 +1476,11 @@ class MainActivity : AppCompatActivity() {
             inputFile.delete()
             speedBatch(uris, speed, index + 1)
         }, onFailure = {
-            // 大概率是没有音轨导致的filter_complex失败，改为仅处理视频画面
+            // 大概率是没有音轨(或奇数宽高)导致的filter_complex失败，改为仅处理视频画面(硬件编码器)
             statusText.text = "[${index + 1}/${uris.size}] 含音轨变速失败，改为仅变速画面(静音)..."
             val command2 = arrayOf(
                 "-y", "-i", inputFile.absolutePath,
-                "-vf", "setpts=PTS/${speed}", "-an",
+                "-vf", "setpts=PTS/${speed},$padFilter", "-an",
                 "-c:v", "h264_mediacodec", "-b:v", "4M",
                 "-profile:v", "baseline", "-level", "3.0", "-pix_fmt", "yuv420p",
                 outputFile.absolutePath
@@ -1488,11 +1491,27 @@ class MainActivity : AppCompatActivity() {
                 addHistory("视频变速", outputFile.name, "成功(${speed}x,静音)")
                 inputFile.delete()
                 speedBatch(uris, speed, index + 1)
-            }, onFailure = { msg ->
-                statusText.text = "[${index + 1}/${uris.size}] 变速失败: ${FfmpegError.friendly(msg)}"
-                addHistory("视频变速", uris[index].toString(), "失败")
-                inputFile.delete()
-                speedBatch(uris, speed, index + 1)
+            }, onFailure = {
+                // 硬件编码器仍然失败(分辨率/设备兼容性问题)，换成软件编码器兜底，兼容性最好但更慢
+                statusText.text = "[${index + 1}/${uris.size}] 硬件编码失败，改用软件编码(较慢)..."
+                val command3 = arrayOf(
+                    "-y", "-i", inputFile.absolutePath,
+                    "-vf", "setpts=PTS/${speed},$padFilter", "-an",
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+                    outputFile.absolutePath
+                )
+                runFfmpeg(command3, estOutMs, progressLabel = "[${index + 1}/${uris.size}]变速中(软件编码)", noticeTitle = "视频变速", onSuccess = {
+                    statusText.text = "[${index + 1}/${uris.size}] 变速完成(软件编码,已静音)，正在保存..."
+                    saveToDownloads(outputFile, "video/*")
+                    addHistory("视频变速", outputFile.name, "成功(${speed}x,软件编码,静音)")
+                    inputFile.delete()
+                    speedBatch(uris, speed, index + 1)
+                }, onFailure = { msg ->
+                    statusText.text = "[${index + 1}/${uris.size}] 变速失败: ${FfmpegError.friendly(msg)}"
+                    addHistory("视频变速", uris[index].toString(), "失败")
+                    inputFile.delete()
+                    speedBatch(uris, speed, index + 1)
+                })
             })
         })
     }
@@ -1879,35 +1898,15 @@ class MainActivity : AppCompatActivity() {
             val values = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, file.name)
                 put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
-                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                // 统一存到 Download/小映 子文件夹，不再散落在 Download 根目录或 Music 目录
+                put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/小映")
             }
             val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
             uri?.let {
                 contentResolver.openOutputStream(it)?.use { out ->
                     file.inputStream().use { input -> input.copyTo(out) }
                 }
-                statusText.text = "已保存到 Downloads/${file.name}"
-                Toast.makeText(this, "完成: ${file.name}", Toast.LENGTH_LONG).show()
-                NotificationHelper.notifyDone(this, "处理完成", file.name)
-            } ?: run { statusText.text = "保存失败：无法创建目标文件" }
-        } catch (e: Exception) {
-            statusText.text = "保存失败: ${e.message}"
-        }
-    }
-
-    private fun saveAudioToMusic(file: File) {
-        try {
-            val values = ContentValues().apply {
-                put(MediaStore.MediaColumns.DISPLAY_NAME, file.name)
-                put(MediaStore.MediaColumns.MIME_TYPE, "audio/mp4")
-                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_MUSIC)
-            }
-            val uri = contentResolver.insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, values)
-            uri?.let {
-                contentResolver.openOutputStream(it)?.use { out ->
-                    file.inputStream().use { input -> input.copyTo(out) }
-                }
-                statusText.text = "已保存到 Music/${file.name}"
+                statusText.text = "已保存到 Download/小映/${file.name}"
                 Toast.makeText(this, "完成: ${file.name}", Toast.LENGTH_LONG).show()
                 NotificationHelper.notifyDone(this, "处理完成", file.name)
             } ?: run { statusText.text = "保存失败：无法创建目标文件" }
