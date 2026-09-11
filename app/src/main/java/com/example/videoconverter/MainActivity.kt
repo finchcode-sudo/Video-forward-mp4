@@ -27,10 +27,14 @@ import com.arthenica.ffmpegkit.LogCallback
 import com.arthenica.ffmpegkit.ReturnCode
 import com.arthenica.ffmpegkit.StatisticsCallback
 import com.google.android.material.slider.RangeSlider
+import java.io.BufferedOutputStream
 import java.io.File
+import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 class MainActivity : AppCompatActivity() {
 
@@ -45,7 +49,8 @@ class MainActivity : AppCompatActivity() {
 
     private enum class PendingAction {
         CONVERT, TRIM, COMPRESS, EXTRACT_AUDIO, GIF, ROTATE, MUTE,
-        AUDIO_TRACK_VIDEO, INFO, CROP, WATERMARK, SUBTITLE, SPEED, THUMBNAIL
+        AUDIO_TRACK_VIDEO, INFO, CROP, WATERMARK, SUBTITLE, SPEED, THUMBNAIL,
+        GIF_TO_VIDEO, GIF_SPLIT, MVIMG_TO_GIF
     }
     private var pendingAction: PendingAction? = null
     private var pendingVideoForAudioTrack: File? = null
@@ -126,6 +131,21 @@ class MainActivity : AppCompatActivity() {
             pickMultipleLauncher.launch(arrayOf("video/*"))
         }
 
+        findViewById<Button>(R.id.gifToVideoButton).setOnClickListener {
+            pendingAction = PendingAction.GIF_TO_VIDEO
+            pickSingleLauncher.launch(arrayOf("image/gif"))
+        }
+
+        findViewById<Button>(R.id.gifSplitButton).setOnClickListener {
+            pendingAction = PendingAction.GIF_SPLIT
+            pickSingleLauncher.launch(arrayOf("image/gif"))
+        }
+
+        findViewById<Button>(R.id.mvimgToGifButton).setOnClickListener {
+            pendingAction = PendingAction.MVIMG_TO_GIF
+            pickSingleLauncher.launch(arrayOf("image/*"))
+        }
+
         findViewById<Button>(R.id.rotateButton).setOnClickListener {
             pendingAction = PendingAction.ROTATE
             pickMultipleLauncher.launch(arrayOf("video/*"))
@@ -194,6 +214,9 @@ class MainActivity : AppCompatActivity() {
             PendingAction.AUDIO_TRACK_VIDEO -> showAudioTrackDialog(uri)
             PendingAction.INFO -> showVideoInfo(uri)
             PendingAction.THUMBNAIL -> showThumbnailPreview(uri)
+            PendingAction.GIF_TO_VIDEO -> gifToVideoAction(uri)
+            PendingAction.GIF_SPLIT -> gifSplitAction(uri)
+            PendingAction.MVIMG_TO_GIF -> mvimgToGifAction(uri)
             PendingAction.SUBTITLE -> {
                 statusText.text = "正在准备..."
                 pendingVideoForSubtitle = copyUriToCache(uri, "subtitle_video_${System.currentTimeMillis()}")
@@ -852,27 +875,242 @@ class MainActivity : AppCompatActivity() {
         if (!checkStorageOrWarn(inputFile.length())) { inputFile.delete(); return }
         val outputFile = File(cacheDir, "output_${System.currentTimeMillis()}.gif")
 
-        statusText.text = "[${index + 1}/${uris.size}] 生成GIF中..."
+        statusText.text = "[${index + 1}/${uris.size}] 生成GIF中(1/2 调色板)..."
         progressBar.visibility = ProgressBar.VISIBLE
 
+        videoSegmentToGifTwoPass(
+            inputPath = inputFile.absolutePath,
+            startSec = startSec,
+            durationSec = durationSec,
+            outputFile = outputFile,
+            noticeTitle = "转GIF",
+            onSuccess = {
+                statusText.text = "[${index + 1}/${uris.size}] GIF生成完成，正在保存..."
+                saveToDownloads(outputFile, "image/gif")
+                addHistory("转GIF", outputFile.name, "成功")
+                inputFile.delete()
+                gifBatch(uris, null, startSec, durationSec, index + 1)
+            },
+            onFailure = { msg ->
+                statusText.text = "[${index + 1}/${uris.size}] GIF生成失败: ${FfmpegError.friendly(msg)}"
+                addHistory("转GIF", uris[index].toString(), "失败")
+                inputFile.delete()
+                gifBatch(uris, null, startSec, durationSec, index + 1)
+            }
+        )
+    }
+
+    /**
+     * 2-pass 调色板 GIF 转换：先 palettegen 生成调色板，再 paletteuse 上色。
+     * 比单趟 fps+scale 直接转 GIF 色彩过渡更平滑、不容易花屏/条带。
+     * 转换思路移植自"小萌GIF"（CuteGIF）的 TaskBuilderVideoToGif。
+     */
+    private fun videoSegmentToGifTwoPass(
+        inputPath: String,
+        startSec: String,
+        durationSec: String,
+        outputFile: File,
+        fps: Int = 12,
+        scaleWidth: Int = 480,
+        maxColors: Int = 192,
+        noticeTitle: String = "转GIF",
+        onSuccess: () -> Unit,
+        onFailure: (String) -> Unit
+    ) {
+        val paletteFile = File(cacheDir, "palette_${System.currentTimeMillis()}.png")
+        val filterBase = "fps=$fps,scale=$scaleWidth:-1:flags=lanczos"
+
+        val paletteCommand = arrayOf(
+            "-y", "-ss", startSec, "-t", durationSec, "-i", inputPath,
+            "-vf", "$filterBase,palettegen=max_colors=$maxColors:stats_mode=diff",
+            paletteFile.absolutePath
+        )
+        runFfmpeg(paletteCommand, noticeTitle = "$noticeTitle(1/2)", onSuccess = {
+            statusText.text = "生成GIF中(2/2 上色)..."
+            val gifCommand = arrayOf(
+                "-y", "-ss", startSec, "-t", durationSec, "-i", inputPath,
+                "-i", paletteFile.absolutePath,
+                "-filter_complex", "$filterBase[x];[x][1:v]paletteuse=dither=bayer",
+                "-loop", "0",
+                outputFile.absolutePath
+            )
+            runFfmpeg(gifCommand, noticeTitle = "$noticeTitle(2/2)", onSuccess = {
+                paletteFile.delete()
+                onSuccess()
+            }, onFailure = { msg ->
+                paletteFile.delete()
+                onFailure(msg)
+            })
+        }, onFailure = { msg ->
+            paletteFile.delete()
+            onFailure(msg)
+        })
+    }
+
+    // ================= 6b. GIF 转视频(来自"小萌GIF") =================
+
+    private fun gifToVideoAction(uri: Uri) {
+        statusText.text = "正在准备..."
+        val inputFile = copyUriToCache(uri, "gif2video_input_${System.currentTimeMillis()}")
+        if (!checkStorageOrWarn(inputFile.length())) { inputFile.delete(); return }
+        val outputFile = File(cacheDir, "gif2video_output_${System.currentTimeMillis()}.mp4")
+        val durationMs = getDurationMs(inputFile.absolutePath)
+
+        startProcessingNotice("GIF转视频")
+        statusText.text = "GIF转视频中..."
+        progressBar.visibility = ProgressBar.VISIBLE
+
+        // pad 到偶数宽高，否则部分编码器/播放器会报错。参考：https://stackoverflow.com/a/53024964
         val command = arrayOf(
-            "-y", "-ss", startSec, "-t", durationSec, "-i", inputFile.absolutePath,
-            "-vf", "fps=10,scale=480:-1:flags=lanczos",
+            "-y", "-i", inputFile.absolutePath,
+            "-c:v", "libx264", "-crf", "23", "-preset", "veryslow", "-pix_fmt", "yuv420p",
+            "-vf", "pad=width=ceil(iw/2)*2:height=ceil(ih/2)*2",
             outputFile.absolutePath
         )
 
-        runFfmpeg(command, noticeTitle = "转GIF", onSuccess = {
-            statusText.text = "[${index + 1}/${uris.size}] GIF生成完成，正在保存..."
-            saveToDownloads(outputFile, "image/gif")
-            addHistory("转GIF", outputFile.name, "成功")
+        runFfmpeg(command, durationMs = durationMs, progressLabel = "GIF转视频", noticeTitle = "GIF转视频", onSuccess = {
+            statusText.text = "GIF转视频完成，正在保存..."
+            saveToDownloads(outputFile, "video/mp4")
+            addHistory("GIF转视频", outputFile.name, "成功")
             inputFile.delete()
-            gifBatch(uris, null, startSec, durationSec, index + 1)
+            stopProcessingNotice()
         }, onFailure = { msg ->
-            statusText.text = "[${index + 1}/${uris.size}] GIF生成失败: ${FfmpegError.friendly(msg)}"
-            addHistory("转GIF", uris[index].toString(), "失败")
+            statusText.text = "GIF转视频失败: ${FfmpegError.friendly(msg)}"
+            addHistory("GIF转视频", uri.toString(), "失败")
             inputFile.delete()
-            gifBatch(uris, null, startSec, durationSec, index + 1)
+            stopProcessingNotice()
         })
+    }
+
+    // ================= 6c. GIF 拆分(逐帧导出，打包为zip，来自"小萌GIF") =================
+
+    private fun gifSplitAction(uri: Uri) {
+        statusText.text = "正在准备..."
+        val inputFile = copyUriToCache(uri, "gifsplit_input_${System.currentTimeMillis()}")
+        if (!checkStorageOrWarn(inputFile.length() * 4)) { inputFile.delete(); return }
+
+        val framesDir = File(cacheDir, "gifsplit_frames_${System.currentTimeMillis()}").apply { mkdirs() }
+
+        startProcessingNotice("GIF拆分")
+        statusText.text = "正在拆分GIF帧..."
+        progressBar.visibility = ProgressBar.VISIBLE
+
+        val command = arrayOf(
+            "-y", "-i", inputFile.absolutePath,
+            File(framesDir, "frame_%05d.png").absolutePath
+        )
+
+        runFfmpeg(command, noticeTitle = "GIF拆分", onSuccess = {
+            val frames = framesDir.listFiles { f -> f.extension == "png" }?.sortedBy { it.name } ?: emptyList()
+            if (frames.isEmpty()) {
+                statusText.text = "GIF拆分失败：未提取到任何帧"
+                addHistory("GIF拆分", uri.toString(), "失败")
+                inputFile.delete()
+                framesDir.deleteRecursively()
+                stopProcessingNotice()
+            } else {
+                statusText.text = "共 ${frames.size} 帧，正在打包..."
+                val zipFile = File(cacheDir, "gif_frames_${System.currentTimeMillis()}.zip")
+                try {
+                    ZipOutputStream(BufferedOutputStream(FileOutputStream(zipFile))).use { zos ->
+                        frames.forEach { frame ->
+                            zos.putNextEntry(ZipEntry(frame.name))
+                            frame.inputStream().use { it.copyTo(zos) }
+                            zos.closeEntry()
+                        }
+                    }
+                    statusText.text = "打包完成，正在保存..."
+                    saveToDownloads(zipFile, "application/zip")
+                    addHistory("GIF拆分", zipFile.name, "成功(共${frames.size}帧)")
+                } catch (e: Exception) {
+                    statusText.text = "打包失败: ${e.message}"
+                    addHistory("GIF拆分", uri.toString(), "失败")
+                } finally {
+                    inputFile.delete()
+                    framesDir.deleteRecursively()
+                    stopProcessingNotice()
+                }
+            }
+        }, onFailure = { msg ->
+            statusText.text = "GIF拆分失败: ${FfmpegError.friendly(msg)}"
+            addHistory("GIF拆分", uri.toString(), "失败")
+            inputFile.delete()
+            framesDir.deleteRecursively()
+            stopProcessingNotice()
+        })
+    }
+
+    // ================= 6d. 动态照片(Motion Photo)转GIF(来自"小萌GIF") =================
+
+    private fun mvimgToGifAction(uri: Uri) {
+        statusText.text = "正在准备..."
+        val photoFile = copyUriToCache(uri, "mvimg_input_${System.currentTimeMillis()}")
+        if (!checkStorageOrWarn(photoFile.length() * 3)) { photoFile.delete(); return }
+
+        val extractedVideo = File(cacheDir, "mvimg_video_${System.currentTimeMillis()}.mp4")
+        val extractSuccess = extractVideoFromMotionPhoto(photoFile, extractedVideo)
+        if (!extractSuccess) {
+            statusText.text = "这张照片里没有找到嵌入的视频(不是动态照片/Motion Photo)"
+            addHistory("动态照片转GIF", uri.toString(), "失败:非动态照片")
+            photoFile.delete()
+            return
+        }
+        photoFile.delete()
+
+        val durationMs = getDurationMs(extractedVideo.absolutePath)
+        val outputFile = File(cacheDir, "mvimg2gif_output_${System.currentTimeMillis()}.gif")
+
+        startProcessingNotice("动态照片转GIF")
+        statusText.text = "正在生成GIF(1/2 调色板)..."
+        progressBar.visibility = ProgressBar.VISIBLE
+
+        videoSegmentToGifTwoPass(
+            inputPath = extractedVideo.absolutePath,
+            startSec = "0",
+            durationSec = (durationMs / 1000.0).coerceAtLeast(0.2).toString(),
+            outputFile = outputFile,
+            noticeTitle = "动态照片转GIF",
+            onSuccess = {
+                statusText.text = "GIF生成完成，正在保存..."
+                saveToDownloads(outputFile, "image/gif")
+                addHistory("动态照片转GIF", outputFile.name, "成功")
+                extractedVideo.delete()
+                stopProcessingNotice()
+            },
+            onFailure = { msg ->
+                statusText.text = "动态照片转GIF失败: ${FfmpegError.friendly(msg)}"
+                addHistory("动态照片转GIF", uri.toString(), "失败")
+                extractedVideo.delete()
+                stopProcessingNotice()
+            }
+        )
+    }
+
+    /**
+     * 从"动态照片"(小米/部分安卓相机在JPEG末尾拼接一段MP4的 Motion Photo 格式)中提取内嵌的视频。
+     * 原理：在文件字节流里搜索 "ftypmp42" 这个 MP4 box 标记，回退4字节(box size字段)，
+     * 从这里开始到文件末尾就是完整的 MP4 数据。移植自"小萌GIF"(CuteGIF)的 MediaTools.extractVideoFromMvimg。
+     */
+    private fun extractVideoFromMotionPhoto(photoFile: File, outputVideo: File): Boolean {
+        return try {
+            val bytes = photoFile.readBytes()
+            val marker = "ftypmp42".toByteArray(Charsets.ISO_8859_1)
+            var index = -1
+            outer@ for (i in 0..bytes.size - marker.size) {
+                for (j in marker.indices) {
+                    if (bytes[i + j] != marker[j]) continue@outer
+                }
+                index = i
+                break
+            }
+            if (index == -1) return false
+            val startOffset = index - 4
+            if (startOffset < 0) return false
+            FileOutputStream(outputVideo).use { it.write(bytes, startOffset, bytes.size - startOffset) }
+            true
+        } catch (e: Exception) {
+            false
+        }
     }
 
     // ================= 7. 旋转/镜像(批量) =================
