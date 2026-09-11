@@ -299,13 +299,19 @@ class MainActivity : AppCompatActivity() {
         val inputFile = copyUriToCache(uris[index], "input_${System.currentTimeMillis()}")
         if (!checkStorageOrWarn(inputFile.length())) { inputFile.delete(); return }
         val outputFile = File(cacheDir, "converted_${System.currentTimeMillis()}.$targetFormat")
+        val durationMs = getDurationMs(inputFile.absolutePath)
 
         statusText.text = "[${index + 1}/${uris.size}] 先尝试快速换容器(不重新编码)..."
         progressBar.visibility = ProgressBar.VISIBLE
 
         val remuxCommand = arrayOf("-y", "-i", inputFile.absolutePath, "-c", "copy", outputFile.absolutePath)
 
-        runFfmpeg(remuxCommand, noticeTitle = "格式转换", onSuccess = {
+        runFfmpeg(
+            remuxCommand,
+            durationMs = durationMs,
+            progressLabel = "[${index + 1}/${uris.size}] 快速换容器",
+            noticeTitle = "格式转换",
+            onSuccess = {
             statusText.text = "[${index + 1}/${uris.size}] 快速换壳成功，正在保存..."
             saveToDownloads(outputFile, "video/*")
             addHistory("格式转换", outputFile.name, "成功(快速换壳)")
@@ -313,7 +319,6 @@ class MainActivity : AppCompatActivity() {
             convertBatch(uris, targetFormat, customBitrateKbps, customFps, index + 1)
         }, onFailure = {
             statusText.text = "[${index + 1}/${uris.size}] 该格式不能直接换壳，改用重新编码..."
-            val durationMs = getDurationMs(inputFile.absolutePath)
             val filterArgs = mutableListOf(
                 "-c:v", "h264_mediacodec", "-b:v", customBitrateKbps?.let { "${it}k" } ?: "4M",
                 "-profile:v", "baseline", "-level", "3.0", "-pix_fmt", "yuv420p",
@@ -919,13 +924,20 @@ class MainActivity : AppCompatActivity() {
     ) {
         val paletteFile = File(cacheDir, "palette_${System.currentTimeMillis()}.png")
         val filterBase = "fps=$fps,scale=$scaleWidth:-1:flags=lanczos"
+        // durationSec 是字符串形式的秒数，转成毫秒供 runFfmpeg 计算百分比进度用
+        val segmentMs = (durationSec.toDoubleOrNull() ?: 0.0) * 1000
 
         val paletteCommand = arrayOf(
             "-y", "-ss", startSec, "-t", durationSec, "-i", inputPath,
             "-vf", "$filterBase,palettegen=max_colors=$maxColors:stats_mode=diff",
             paletteFile.absolutePath
         )
-        runFfmpeg(paletteCommand, noticeTitle = "$noticeTitle(1/2)", onSuccess = {
+        runFfmpeg(
+            paletteCommand,
+            durationMs = segmentMs,
+            progressLabel = "$noticeTitle(1/2 调色板)",
+            noticeTitle = "$noticeTitle(1/2)",
+            onSuccess = {
             statusText.text = "生成GIF中(2/2 上色)..."
             val gifCommand = arrayOf(
                 "-y", "-ss", startSec, "-t", durationSec, "-i", inputPath,
@@ -934,7 +946,12 @@ class MainActivity : AppCompatActivity() {
                 "-loop", "0",
                 outputFile.absolutePath
             )
-            runFfmpeg(gifCommand, noticeTitle = "$noticeTitle(2/2)", onSuccess = {
+            runFfmpeg(
+                gifCommand,
+                durationMs = segmentMs,
+                progressLabel = "$noticeTitle(2/2 上色)",
+                noticeTitle = "$noticeTitle(2/2)",
+                onSuccess = {
                 paletteFile.delete()
                 onSuccess()
             }, onFailure = { msg ->
